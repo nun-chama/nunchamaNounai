@@ -1,4 +1,4 @@
-name: Fetch AI Music Articles from X
+name: Fetch AI Music Articles from Google News
 
 on:
   schedule:
@@ -28,61 +28,74 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 snscrape
+          pip install requests beautifulsoup4 feedparser
 
       - name: Create fetch script
         run: |
           cat << 'EOF' > fetch_articles.py
           import os
-          import json
+          import feedparser
           from datetime import datetime
-          import subprocess
-          import re
+          import urllib.parse
+          from bs4 import BeautifulSoup
+          import requests
 
-          def fetch_tweets_with_snscrape(query, count=5):
-              """Use snscrape to fetch tweets"""
-              tweets = []
-              try:
-                  # Use snscrape CLI
-                  cmd = f'snscrape --jsonl -n {count} twitter-search "{query}"'
-                  result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                  
-                  for line in result.stdout.strip().split('\n'):
-                      if line:
-                          try:
-                              tweet = json.loads(line)
-                              tweets.append({
-                                  'id': tweet.get('id', ''),
-                                  'content': tweet.get('rawContent', tweet.get('content', '')),
-                                  'user': tweet.get('user', {}).get('username', 'unknown'),
-                                  'date': tweet.get('date', ''),
-                                  'url': tweet.get('url', '')
-                              })
-                          except json.JSONDecodeError:
-                              continue
-              except Exception as e:
-                  print(f"Error fetching tweets: {e}")
+          def fetch_google_news_rss(query, count=5):
+              """Fetch news from Google News RSS"""
+              encoded_query = urllib.parse.quote(query)
+              rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
               
-              return tweets
+              print(f"Fetching RSS: {rss_url}")
+              feed = feedparser.parse(rss_url)
+              
+              articles = []
+              for entry in feed.entries[:count]:
+                  # Extract source name
+                  source = entry.get('source', {}).get('title', 'Unknown Source')
+                  
+                  # Published date
+                  published = entry.get('published', '')
+                  try:
+                      # Attempt to convert date format
+                      dt = datetime(*entry.published_parsed[:6])
+                      date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                  except:
+                      date_str = published
 
-          def save_article(tweet, folder_path, index):
-              """Save a tweet as markdown file"""
+                  articles.append({
+                      'title': entry.title,
+                      'link': entry.link,
+                      'date': date_str,
+                      'source': source,
+                      'summary': entry.get('summary', '')  # Summary might contain HTML
+                  })
+              
+              return articles
+
+          def clean_html(html_content):
+              soup = BeautifulSoup(html_content, 'html.parser')
+              return soup.get_text()
+
+          def save_article(article, folder_path, index):
+              """Save an article as markdown file"""
               filename = f"article_{index+1:02d}.md"
               filepath = os.path.join(folder_path, filename)
               
-              content = f"""# AI音楽関連ツイート #{index+1}
+              clean_summary = clean_html(article['summary'])
+              
+              content = f"""# {article['title']}
 
-          ## 投稿者
-          @{tweet['user']}
+          ## 情報源
+          {article['source']}
 
-          ## 投稿日時
-          {tweet['date']}
+          ## 公開日時
+          {article['date']}
 
-          ## 内容
-          {tweet['content']}
+          ## リンク
+          {article['link']}
 
-          ## 元ツイート
-          {tweet['url']}
+          ## 概要
+          {clean_summary}
 
           ---
           *取得日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
@@ -106,23 +119,22 @@ jobs:
               # Search query
               query = 'AI音楽'
               
-              print(f"Fetching {count} tweets about '{query}'...")
-              tweets = fetch_tweets_with_snscrape(query, count)
+              print(f"Fetching {count} articles about '{query}' from Google News...")
+              articles = fetch_google_news_rss(query, count)
               
-              if not tweets:
-                  print("No tweets found. Creating placeholder...")
-                  # Create a placeholder file if no tweets found
+              if not articles:
+                  print("No articles found. Creating placeholder...")
+                  # Create a placeholder file if no articles found
                   placeholder_path = os.path.join(folder_path, 'README.md')
                   with open(placeholder_path, 'w', encoding='utf-8') as f:
                       f.write(f"# AI音楽記事取得 - {timestamp}\n\n")
-                      f.write("ツイートの取得に失敗しました。\n")
-                      f.write("X/Twitterの仕様変更により、認証なしでのツイート取得が制限されている可能性があります。\n")
+                      f.write("記事の取得に失敗しました、または記事が見つかりませんでした。\n")
                   return
               
-              # Save each tweet
+              # Save each article
               saved_files = []
-              for i, tweet in enumerate(tweets):
-                  filepath = save_article(tweet, folder_path, i)
+              for i, article in enumerate(articles):
+                  filepath = save_article(article, folder_path, i)
                   saved_files.append(filepath)
               
               print(f"\nSaved {len(saved_files)} articles to {folder_path}")
