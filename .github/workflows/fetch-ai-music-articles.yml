@@ -1,0 +1,145 @@
+name: Fetch AI Music Articles from X
+
+on:
+  schedule:
+    # 毎日日本時間10:00 (UTC 01:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      article_count:
+        description: 'Number of articles to fetch'
+        required: false
+        default: '5'
+
+jobs:
+  fetch-articles:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 snscrape
+
+      - name: Create fetch script
+        run: |
+          cat << 'EOF' > fetch_articles.py
+          import os
+          import json
+          from datetime import datetime
+          import subprocess
+          import re
+
+          def fetch_tweets_with_snscrape(query, count=5):
+              """Use snscrape to fetch tweets"""
+              tweets = []
+              try:
+                  # Use snscrape CLI
+                  cmd = f'snscrape --jsonl -n {count} twitter-search "{query}"'
+                  result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                  
+                  for line in result.stdout.strip().split('\n'):
+                      if line:
+                          try:
+                              tweet = json.loads(line)
+                              tweets.append({
+                                  'id': tweet.get('id', ''),
+                                  'content': tweet.get('rawContent', tweet.get('content', '')),
+                                  'user': tweet.get('user', {}).get('username', 'unknown'),
+                                  'date': tweet.get('date', ''),
+                                  'url': tweet.get('url', '')
+                              })
+                          except json.JSONDecodeError:
+                              continue
+              except Exception as e:
+                  print(f"Error fetching tweets: {e}")
+              
+              return tweets
+
+          def save_article(tweet, folder_path, index):
+              """Save a tweet as markdown file"""
+              filename = f"article_{index+1:02d}.md"
+              filepath = os.path.join(folder_path, filename)
+              
+              content = f"""# AI音楽関連ツイート #{index+1}
+
+          ## 投稿者
+          @{tweet['user']}
+
+          ## 投稿日時
+          {tweet['date']}
+
+          ## 内容
+          {tweet['content']}
+
+          ## 元ツイート
+          {tweet['url']}
+
+          ---
+          *取得日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+          """
+              
+              with open(filepath, 'w', encoding='utf-8') as f:
+                  f.write(content)
+              
+              print(f"Saved: {filepath}")
+              return filepath
+
+          def main():
+              # Get article count from environment or default
+              count = int(os.environ.get('ARTICLE_COUNT', '5'))
+              
+              # Create folder with timestamp
+              timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+              folder_path = os.path.join('articles', timestamp)
+              os.makedirs(folder_path, exist_ok=True)
+              
+              # Search query
+              query = 'AI音楽'
+              
+              print(f"Fetching {count} tweets about '{query}'...")
+              tweets = fetch_tweets_with_snscrape(query, count)
+              
+              if not tweets:
+                  print("No tweets found. Creating placeholder...")
+                  # Create a placeholder file if no tweets found
+                  placeholder_path = os.path.join(folder_path, 'README.md')
+                  with open(placeholder_path, 'w', encoding='utf-8') as f:
+                      f.write(f"# AI音楽記事取得 - {timestamp}\n\n")
+                      f.write("ツイートの取得に失敗しました。\n")
+                      f.write("X/Twitterの仕様変更により、認証なしでのツイート取得が制限されている可能性があります。\n")
+                  return
+              
+              # Save each tweet
+              saved_files = []
+              for i, tweet in enumerate(tweets):
+                  filepath = save_article(tweet, folder_path, i)
+                  saved_files.append(filepath)
+              
+              print(f"\nSaved {len(saved_files)} articles to {folder_path}")
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+      - name: Fetch articles
+        env:
+          ARTICLE_COUNT: ${{ github.event.inputs.article_count || '5' }}
+        run: |
+          python fetch_articles.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add articles/
+          git diff --staged --quiet || (git commit -m "Add AI music articles - $(date '+%Y-%m-%d %H:%M:%S')" && git push)
