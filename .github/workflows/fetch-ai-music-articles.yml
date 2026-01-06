@@ -1,4 +1,4 @@
-name: Fetch AI Music Articles from Google News
+name: Fetch AI Music Articles from Google News & note
 
 on:
   schedule:
@@ -72,6 +72,38 @@ jobs:
               
               return articles
 
+          def fetch_note_rss(tag, count=5):
+              """Fetch articles from note hashtag RSS"""
+              encoded_tag = urllib.parse.quote(tag)
+              rss_url = f"https://note.com/hashtag/{encoded_tag}/rss"
+              
+              print(f"Fetching RSS: {rss_url}")
+              feed = feedparser.parse(rss_url)
+              
+              articles = []
+              for entry in feed.entries[:count]:
+                  # Published date
+                  published = entry.get('published', '')
+                  try:
+                      # Attempt to convert date format if possible, otherwise keep original
+                      dt = datetime(*entry.published_parsed[:6])
+                      date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                  except:
+                      date_str = published
+
+                  # Description/Summary in note RSS might be in 'subtitle' or 'description'
+                  summary = entry.get('subtitle', entry.get('description', ''))
+
+                  articles.append({
+                      'title': entry.title,
+                      'link': entry.link,
+                      'date': date_str,
+                      'source': 'note',
+                      'summary': summary
+                  })
+              
+              return articles
+
           def clean_html(html_content):
               soup = BeautifulSoup(html_content, 'html.parser')
               return soup.get_text()
@@ -116,14 +148,21 @@ jobs:
               folder_path = os.path.join('articles', timestamp)
               os.makedirs(folder_path, exist_ok=True)
               
-              # Search query
-              query = 'AI音楽'
+              # Search query for Google News
+              query_google = 'AI音楽'
+              print(f"Fetching {count} articles about '{query_google}' from Google News...")
+              google_articles = fetch_google_news_rss(query_google, count)
               
-              print(f"Fetching {count} articles about '{query}' from Google News...")
-              articles = fetch_google_news_rss(query, count)
+              # Search tag for note
+              tag_note = 'AI音楽'
+              print(f"Fetching {count} articles about '{tag_note}' from note...")
+              note_articles = fetch_note_rss(tag_note, count)
               
-              if not articles:
-                  print("No articles found. Creating placeholder...")
+              # Combine articles
+              all_articles = google_articles + note_articles
+              
+              if not all_articles:
+                  print("No articles found from any source. Creating placeholder...")
                   # Create a placeholder file if no articles found
                   placeholder_path = os.path.join(folder_path, 'README.md')
                   with open(placeholder_path, 'w', encoding='utf-8') as f:
@@ -133,7 +172,7 @@ jobs:
               
               # Save each article
               saved_files = []
-              for i, article in enumerate(articles):
+              for i, article in enumerate(all_articles):
                   filepath = save_article(article, folder_path, i)
                   saved_files.append(filepath)
               
